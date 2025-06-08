@@ -1,18 +1,29 @@
-import React, { useCallback } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Box, Typography, CircularProgress, Alert } from '@mui/material';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 
 interface UploadSectionProps {
-  onFileUpload: (file: File) => Promise<void>;
+  onFileUpload: (file: File) => Promise<(() => void) | undefined>;
   isLoading: boolean;
   error: string | null;
 }
 
 const UploadSection: React.FC<UploadSectionProps> = ({ onFileUpload, isLoading, error }) => {
+  const cleanupRef = useRef<(() => void) | undefined>();
+
+  useEffect(() => {
+    return () => {
+      if (cleanupRef.current) {
+        cleanupRef.current();
+      }
+    };
+  }, []);
+
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
-      await onFileUpload(acceptedFiles[0]);
+      const cleanup = await onFileUpload(acceptedFiles[0]);
+      cleanupRef.current = cleanup;
     }
   }, [onFileUpload]);
 

@@ -13,6 +13,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
 
   const handleFileUpload = async (file: File) => {
+    let pollInterval: NodeJS.Timeout;
     try {
       setIsLoading(true);
       setError(null);
@@ -53,7 +54,7 @@ function App() {
       console.log('Scraping job started successfully');
 
       // Step 3: Poll for job status
-      const pollInterval = setInterval(async () => {
+      pollInterval = setInterval(async () => {
         try {
           const statusResponse = await fetch(`/api/job/${jobId}`);
           if (!statusResponse.ok) {
@@ -85,14 +86,18 @@ function App() {
           setError('Failed to get job status');
         }
       }, 2000);
-
-      // Cleanup interval on component unmount
-      return () => clearInterval(pollInterval);
     } catch (error) {
       console.error('Error in file upload process:', error);
       setIsLoading(false);
       setError(error instanceof Error ? error.message : 'An error occurred');
     }
+
+    // Cleanup function
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
   };
 
   const handleExport = async (format: 'csv' | 'json') => {
