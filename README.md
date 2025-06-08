@@ -24,9 +24,10 @@ This system helps the ASB Alumni Office maintain up-to-date alumni records by:
 - Built-in delays to prevent IP blocking
 
 ### 🧠 AI-Powered Analysis
+- **Gemini AI Integration**: Real AI summarization when API key is configured
 - Automatic summarization of About sections
 - Structured extraction of career history
-- Mock AI service (ready for Gemini/OpenAI integration)
+- Fallback to mock AI service for demo purposes
 
 ### 📊 Interactive Dashboard
 - Real-time search and filtering
@@ -46,6 +47,7 @@ This system helps the ASB Alumni Office maintain up-to-date alumni records by:
 ### Prerequisites
 - Node.js 18+ 
 - npm or yarn
+- **Gemini API Key** (optional, for real AI processing)
 
 ### Installation
 
@@ -60,7 +62,19 @@ This system helps the ASB Alumni Office maintain up-to-date alumni records by:
    npm install
    ```
 
-3. **Start the development servers**
+3. **Configure Environment Variables**
+   
+   Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
+   
+   Edit `.env` and add your Gemini API key:
+   ```env
+   GEMINI_API_KEY=your_actual_gemini_api_key_here
+   ```
+
+4. **Start the development servers**
    
    Terminal 1 (Frontend):
    ```bash
@@ -72,9 +86,29 @@ This system helps the ASB Alumni Office maintain up-to-date alumni records by:
    npm run server
    ```
 
-4. **Access the application**
+5. **Access the application**
    - Frontend: http://localhost:5173
    - Backend API: http://localhost:3001
+
+## 🔑 Getting a Gemini API Key
+
+1. **Visit Google AI Studio**
+   - Go to [https://makersuite.google.com/app/apikey](https://makersuite.google.com/app/apikey)
+   - Sign in with your Google account
+
+2. **Create API Key**
+   - Click "Create API Key"
+   - Choose "Create API key in new project" or select existing project
+   - Copy the generated API key
+
+3. **Add to Environment**
+   - Open your `.env` file
+   - Replace `your_gemini_api_key_here` with your actual API key
+   - Restart the server to apply changes
+
+4. **Verify Integration**
+   - Check server logs for "Gemini AI (Real)" message
+   - Visit http://localhost:3001/api/health to confirm configuration
 
 ## 📁 Project Structure
 
@@ -90,6 +124,7 @@ This system helps the ASB Alumni Office maintain up-to-date alumni records by:
 │   ├── index.js          # Express server
 │   ├── scraper.js        # Puppeteer scraping logic
 │   └── ai.js             # AI summarization service
+├── .env                  # Environment variables
 └── docs/                 # Project documentation
 ```
 
@@ -103,33 +138,39 @@ Jane Doe,https://www.linkedin.com/in/janedoe/
 John Smith,https://www.linkedin.com/in/johnsmith/
 ```
 
-### Environment Variables (Optional)
-Create a `.env` file for production:
+### Environment Variables
 ```env
-PORT=3001
+# Required for production
 GEMINI_API_KEY=your_gemini_api_key_here
-NODE_ENV=production
+
+# Optional configurations
+PORT=3001
+SCRAPING_DELAY_MS=3000
+MAX_CONCURRENT_BROWSERS=1
+BROWSER_TIMEOUT_MS=30000
+CORS_ORIGIN=http://localhost:5173
 ```
 
 ## 🤖 AI Integration
 
-The system includes a mock AI service for demo purposes. To integrate with real AI services:
+### Gemini AI (Recommended)
+The system automatically detects if a Gemini API key is configured:
 
-### Gemini API Integration
-1. Get API key from Google AI Studio
-2. Install the Gemini SDK:
-   ```bash
-   npm install @google/generative-ai
-   ```
-3. Update `server/ai.js` with the production code (commented in the file)
+**With API Key:**
+- Real AI-powered summarization
+- Advanced text analysis
+- Structured role extraction
 
-### OpenAI Integration
-1. Get API key from OpenAI
-2. Install OpenAI SDK:
-   ```bash
-   npm install openai
-   ```
-3. Implement OpenAI integration in `server/ai.js`
+**Without API Key:**
+- Mock AI service for demo
+- Basic text processing
+- Still functional for testing
+
+### API Usage
+The AI service generates:
+- Professional career summaries (1-2 sentences, <150 characters)
+- Key expertise identification
+- Industry and skill extraction
 
 ## 📊 Data Schema
 
@@ -159,7 +200,7 @@ The system includes a mock AI service for demo purposes. To integrate with real 
 ## 🛡️ Rate Limiting & Ethics
 
 The scraper implements several protective measures:
-- 3-second delays between profile requests
+- 3-second delays between profile requests (configurable)
 - Headless browser with realistic user agent
 - Graceful error handling
 - Respect for robots.txt (public profiles only)
@@ -176,17 +217,22 @@ The scraper implements several protective measures:
 
 ### Common Issues
 
-1. **Puppeteer Installation Issues**
+1. **"Using mock AI service" message**
+   - Add your Gemini API key to `.env` file
+   - Restart the server
+   - Check `/api/health` endpoint
+
+2. **Puppeteer Installation Issues**
    ```bash
    npm install puppeteer --unsafe-perm=true
    ```
 
-2. **LinkedIn Blocking**
-   - Reduce scraping frequency
+3. **LinkedIn Blocking**
+   - Reduce scraping frequency in `.env`
    - Check if profiles are truly public
    - Verify user agent settings
 
-3. **Memory Issues**
+4. **Memory Issues**
    - Limit concurrent browser instances
    - Increase Node.js memory limit:
      ```bash
@@ -194,6 +240,12 @@ The scraper implements several protective measures:
      ```
 
 ## 📋 API Endpoints
+
+### Health Check
+```
+GET /api/health
+Response: { "status": "ok", "geminiConfigured": true, "message": "..." }
+```
 
 ### Upload CSV
 ```
@@ -222,6 +274,18 @@ Content-Type: application/json
 Body: { "data": [...] }
 ```
 
+## 💰 API Costs
+
+### Gemini API Pricing
+- **Free Tier**: 15 requests per minute, 1,500 requests per day
+- **Paid Tier**: $0.00025 per 1K characters (input), $0.0005 per 1K characters (output)
+- **Typical Cost**: ~$0.01-0.02 per alumni profile summary
+
+### Cost Estimation
+For 100 alumni profiles:
+- Estimated cost: $1-2 USD
+- Processing time: ~10-15 minutes (with rate limiting)
+
 ## 🎥 Demo Video
 
 Create a demo video showing:
@@ -229,7 +293,8 @@ Create a demo video showing:
 2. Real-time scraping progress
 3. Dashboard navigation and filtering
 4. Data export functionality
-5. Error handling examples
+5. AI summary generation
+6. Error handling examples
 
 ## 🤝 Contributing
 
@@ -247,8 +312,9 @@ This project is for educational and demonstration purposes. Please ensure compli
 
 For issues and questions:
 1. Check the troubleshooting section
-2. Review the GitHub issues
-3. Contact the development team
+2. Verify your Gemini API key configuration
+3. Review the GitHub issues
+4. Contact the development team
 
 ---
 

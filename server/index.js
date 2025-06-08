@@ -8,6 +8,10 @@ import { fileURLToPath } from 'url';
 import { createObjectCsvWriter } from 'csv-writer';
 import { scrapeLinkedInProfile } from './scraper.js';
 import { generateSummary } from './ai.js';
+import dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -255,7 +259,8 @@ async function processScrapingJob(jobId) {
       
       // Add delay between requests to be respectful
       if (i < job.profiles.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        const delay = parseInt(process.env.SCRAPING_DELAY_MS) || 3000;
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
     
@@ -274,6 +279,21 @@ async function processScrapingJob(jobId) {
   }
 }
 
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  const hasGeminiKey = process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here';
+  res.json({ 
+    status: 'ok', 
+    geminiConfigured: hasGeminiKey,
+    message: hasGeminiKey ? 'Gemini AI enabled' : 'Using mock AI service - add GEMINI_API_KEY to enable real AI'
+  });
+});
+
 app.listen(PORT, () => {
+  const hasGeminiKey = process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here';
   console.log(`Server running on port ${PORT}`);
+  console.log(`AI Service: ${hasGeminiKey ? 'Gemini AI (Real)' : 'Mock AI (Demo)'}`);
+  if (!hasGeminiKey) {
+    console.log('💡 Add your GEMINI_API_KEY to .env file to enable real AI processing');
+  }
 });
