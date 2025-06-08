@@ -60,45 +60,61 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     // Parse CSV file
     const profiles = [];
     
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (row) => {
-        if (row.linkedin_url) {
-          profiles.push({
-            name: row.name || '',
-            linkedin_url: row.linkedin_url.trim()
-          });
-        }
-      })
-      .on('end', () => {
-        // Create job
-        const job = {
-          jobId,
-          status: 'pending',
-          totalProfiles: profiles.length,
-          processedProfiles: 0,
-          successfulProfiles: 0,
-          failedProfiles: 0,
-          profiles,
-          results: [],
-          startedAt: new Date().toISOString(),
-          errors: []
-        };
-        
-        jobs.set(jobId, job);
-        
-        // Clean up uploaded file
-        fs.unlinkSync(filePath);
-        
-        res.json({ jobId, totalProfiles: profiles.length });
-      })
-      .on('error', (error) => {
-        console.error('CSV parsing error:', error);
-        res.status(500).json({ error: 'Failed to parse CSV file' });
-      });
+    // Create a promise to handle the CSV parsing
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(filePath)
+        .pipe(csv())
+        .on('data', (row) => {
+          if (row.linkedin_url) {
+            profiles.push({
+              name: row.name || '',
+              linkedin_url: row.linkedin_url.trim()
+            });
+          }
+        })
+        .on('end', () => {
+          resolve();
+        })
+        .on('error', (error) => {
+          reject(error);
+        });
+    });
+
+    // Create job
+    const job = {
+      jobId,
+      status: 'pending',
+      totalProfiles: profiles.length,
+      processedProfiles: 0,
+      successfulProfiles: 0,
+      failedProfiles: 0,
+      profiles,
+      results: [],
+      startedAt: new Date().toISOString(),
+      errors: []
+    };
+    
+    jobs.set(jobId, job);
+    
+    // Clean up uploaded file
+    try {
+      fs.unlinkSync(filePath);
+    } catch (error) {
+      console.error('Error deleting file:', error);
+    }
+    
+    res.json({ jobId, totalProfiles: profiles.length });
   } catch (error) {
     console.error('Upload error:', error);
-    res.status(500).json({ error: 'Upload failed' });
+    // Clean up file if it exists
+    if (req.file && req.file.path) {
+      try {
+        fs.unlinkSync(req.file.path);
+      } catch (cleanupError) {
+        console.error('Error cleaning up file:', cleanupError);
+      }
+    }
+    res.status(500).json({ error: 'Upload failed: ' + error.message });
   }
 });
 
@@ -289,11 +305,23 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  const hasGeminiKey = process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here';
-  console.log(`Server running on port ${PORT}`);
-  console.log(`AI Service: ${hasGeminiKey ? 'Gemini AI (Real)' : 'Mock AI (Demo)'}`);
-  if (!hasGeminiKey) {
-    console.log('💡 Add your GEMINI_API_KEY to .env file to enable real AI processing');
-  }
-});
+// Function to start server with port fallback
+const startServer = (port) => {
+  app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+    console.log('AI Service:', process.env.GEMINI_API_KEY ? 'Real AI' : 'Mock AI (Demo)');
+    if (!process.env.GEMINI_API_KEY) {
+      console.log('💡 Add your GEMINI_API_KEY to .env file to enable real AI processing');
+    }
+  }).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log(`Port ${port} is busy, trying ${port + 1}...`);
+      startServer(port + 1);
+    } else {
+      console.error('Server error:', err);
+    }
+  });
+};
+
+// Start the server
+startServer(PORT);

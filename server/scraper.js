@@ -28,18 +28,61 @@ export async function scrapeLinkedInProfile(profileUrl) {
     
     // Set viewport
     await page.setViewport({ width: 1366, height: 768 });
+
+    // Set default navigation timeout
+    page.setDefaultNavigationTimeout(60000); // Increase timeout to 60 seconds
     
-    // Navigate to the profile
-    await page.goto(profileUrl, { 
-      waitUntil: 'networkidle2',
-      timeout: 30000 
+    // Set default timeout for all operations
+    page.setDefaultTimeout(60000);
+
+    // Enable request interception to block unnecessary resources
+    await page.setRequestInterception(true);
+    page.on('request', (request) => {
+      const resourceType = request.resourceType();
+      if (resourceType === 'image' || resourceType === 'stylesheet' || resourceType === 'font') {
+        request.abort();
+      } else {
+        request.continue();
+      }
     });
     
-    // Wait a bit for dynamic content to load
-    await page.waitForTimeout(2000);
+    // Navigate to the profile with retry logic
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        await page.goto(profileUrl, { 
+          waitUntil: ['networkidle0', 'domcontentloaded'],
+          timeout: 60000 
+        });
+        break;
+      } catch (error) {
+        retries--;
+        if (retries === 0) throw error;
+        console.log(`Navigation failed, retrying... (${retries} attempts left)`);
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds before retry
+      }
+    }
+    
+    // Wait for the main content to load
+    await page.waitForSelector('body', { timeout: 60000 });
+    
+    // Wait for dynamic content to load
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // Check if we're on a login page
+    const isLoginPage = await page.evaluate(() => {
+      return document.querySelector('form[action*="login"]') !== null;
+    });
+
+    if (isLoginPage) {
+      throw new Error('LinkedIn login required');
+    }
     
     // Get the page content
-    const content = await page.content();
+    const content = await page.evaluate(() => {
+      return document.documentElement.outerHTML;
+    });
+    
     const $ = cheerio.load(content);
     
     // Extract data using CSS selectors
@@ -58,7 +101,8 @@ export async function scrapeLinkedInProfile(profileUrl) {
       'h1.text-heading-xlarge',
       '.pv-text-details__left-panel h1',
       '.ph5 h1',
-      'h1[data-anonymize="person-name"]'
+      'h1[data-anonymize="person-name"]',
+      'h1[class*="text-heading"]'
     ];
     
     for (const selector of nameSelectors) {
@@ -73,7 +117,8 @@ export async function scrapeLinkedInProfile(profileUrl) {
     const titleSelectors = [
       '.text-body-medium.break-words',
       '.pv-text-details__left-panel .text-body-medium',
-      '.ph5 .text-body-medium'
+      '.ph5 .text-body-medium',
+      '[data-section="currentPositionsDetails"] .pvs-entity__path-node'
     ];
     
     for (const selector of titleSelectors) {
@@ -97,7 +142,8 @@ export async function scrapeLinkedInProfile(profileUrl) {
     const locationSelectors = [
       '.text-body-small.inline.t-black--light.break-words',
       '.pv-text-details__left-panel .text-body-small',
-      '.ph5 .text-body-small'
+      '.ph5 .text-body-small',
+      '[data-section="locationDetails"] .pvs-entity__path-node'
     ];
     
     for (const selector of locationSelectors) {
@@ -112,7 +158,8 @@ export async function scrapeLinkedInProfile(profileUrl) {
     const aboutSelectors = [
       '.pv-shared-text-with-see-more .inline-show-more-text',
       '.pv-about-section .pv-about__summary-text',
-      '[data-section="summary"] .inline-show-more-text'
+      '[data-section="summary"] .inline-show-more-text',
+      '[data-section="aboutDetails"] .pvs-entity__path-node'
     ];
     
     for (const selector of aboutSelectors) {
@@ -123,8 +170,8 @@ export async function scrapeLinkedInProfile(profileUrl) {
       }
     }
     
-    // Extract education - simplified approach
-    const educationElements = $('[data-section="educationsDetails"] .pvs-entity, .pv-education-section .pv-entity__summary-info');
+    // Extract education
+    const educationElements = $('[data-section="educationsDetails"] .pvs-entity, .pv-education-section .pv-entity__summary-info, [data-section="educationDetails"] .pvs-entity__path-node');
     educationElements.each((i, element) => {
       const educationText = $(element).text().trim();
       if (educationText && educationText.length > 10) {
@@ -132,8 +179,8 @@ export async function scrapeLinkedInProfile(profileUrl) {
       }
     });
     
-    // Extract experience/past roles - simplified approach
-    const experienceElements = $('[data-section="experienceDetails"] .pvs-entity, .pv-experience-section .pv-entity__summary-info');
+    // Extract experience/past roles
+    const experienceElements = $('[data-section="experienceDetails"] .pvs-entity, .pv-experience-section .pv-entity__summary-info, [data-section="experienceDetails"] .pvs-entity__path-node');
     experienceElements.each((i, element) => {
       const expText = $(element).text().trim();
       if (expText && expText.length > 10) {
@@ -157,7 +204,11 @@ export async function scrapeLinkedInProfile(profileUrl) {
     throw new Error(`Failed to scrape profile: ${error.message}`);
   } finally {
     if (browser) {
-      await browser.close();
+      try {
+        await browser.close();
+      } catch (error) {
+        console.error('Error closing browser:', error);
+      }
     }
   }
 }

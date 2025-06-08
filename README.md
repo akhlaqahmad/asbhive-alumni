@@ -247,7 +247,7 @@ GET /api/health
 Response: { "status": "ok", "geminiConfigured": true, "message": "..." }
 ```
 
-### Upload CSV
+### ç CSV
 ```
 POST /api/upload
 Content-Type: multipart/form-data
