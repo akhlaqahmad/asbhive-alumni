@@ -2,6 +2,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import puppeteer from 'puppeteer';
 import * as cheerio from 'cheerio';
 import dotenv from 'dotenv';
+import { generateSummary } from './ai.js';
 
 // Load environment variables
 dotenv.config();
@@ -12,26 +13,319 @@ if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_ap
   genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 }
 
-export async function scrapeLinkedInProfile(profileUrl) {
-  try {
-    console.log(`Starting hybrid scrape for: ${profileUrl}`);
-    
-    // Step 1: Get the raw HTML content using Puppeteer
-    const htmlContent = await fetchLinkedInHTML(profileUrl);
-    
-    // Step 2: Use Gemini API to analyze the HTML content
-    if (genAI && htmlContent) {
-      console.log('Using Gemini API to analyze LinkedIn content');
-      return await analyzeLinkedInContentWithGemini(htmlContent, profileUrl);
+// Helper function for delay
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Global browser instance and page
+let globalBrowser = null;
+let globalPage = null;
+let isLoggedIn = false;
+
+// Initialize browser session
+async function initializeBrowser() {
+  if (globalBrowser) {
+    return;
+  }
+
+  console.log('Initializing browser session...');
+  globalBrowser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--window-size=1920x1080',
+    ]
+  });
+
+  globalPage = await globalBrowser.newPage();
+  
+  // Set a realistic user agent
+  await globalPage.setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+  
+  // Set viewport
+  await globalPage.setViewport({ width: 1920, height: 1080 });
+
+  // Add request interception to block unnecessary resources
+  await globalPage.setRequestInterception(true);
+  globalPage.on('request', (request) => {
+    const resourceType = request.resourceType();
+    if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+      request.abort();
     } else {
-      console.log('Gemini API not configured or HTML fetch failed, using mock data');
-      return generateMockProfileData(profileUrl);
+      request.continue();
     }
+  });
+
+  // Login to LinkedIn if credentials are available
+  if (process.env.LINKEDIN_EMAIL && process.env.LINKEDIN_PASSWORD && !isLoggedIn) {
+    try {
+      console.log('Logging in to LinkedIn...');
+      await globalPage.goto('https://www.linkedin.com/login', { waitUntil: 'networkidle0' });
+      
+      // Wait for the login form
+      await globalPage.waitForSelector('#username', { timeout: 10000 });
+      
+      // Type in credentials
+      await globalPage.type('#username', process.env.LINKEDIN_EMAIL);
+      await globalPage.type('#password', process.env.LINKEDIN_PASSWORD);
+      
+      // Click the login button
+      await globalPage.click('button[type="submit"]');
+      
+      // Wait for navigation to complete
+      await globalPage.waitForNavigation({ waitUntil: 'networkidle0' });
+      
+      // Check if login was successful
+      const loginSuccess = await globalPage.evaluate(() => {
+        return !document.querySelector('.login__form');
+      });
+      
+      if (!loginSuccess) {
+        throw new Error('LinkedIn login failed');
+      }
+      
+      isLoggedIn = true;
+      console.log('LinkedIn login successful');
+      await delay(2000); // Wait a bit after login
+    } catch (loginError) {
+      console.error('LinkedIn login error:', loginError);
+      throw loginError;
+    }
+  }
+}
+
+// Cleanup function to close browser
+export async function cleanupBrowser() {
+  if (globalBrowser) {
+    console.log('Closing browser session...');
+    await globalBrowser.close();
+    globalBrowser = null;
+    globalPage = null;
+    isLoggedIn = false;
+  }
+}
+
+export async function scrapeLinkedInProfile(url) {
+  console.log('Starting scrape for:', url);
+  
+  try {
+    // Initialize browser if not already done
+    await initializeBrowser();
+
+    console.log('Navigating to profile page...');
+    await globalPage.goto(url, { 
+      waitUntil: 'networkidle0',
+      timeout: 30000 
+    });
+
+    // Wait for the main content to load
+    await globalPage.waitForSelector('main', { timeout: 30000 });
     
+    // Add a small delay to ensure dynamic content loads
+    await delay(2000);
+
+    console.log('Extracting profile data...');
+    
+    // Extract profile data with updated selectors
+    const profileData = await globalPage.evaluate(() => {
+      const getText = (selector) => {
+        const element = document.querySelector(selector);
+        console.log(`Looking for selector: ${selector}`);
+        console.log(`Found element:`, element);
+        return element ? element.textContent.trim() : '';
+      };
+
+      const getList = (selector) => {
+        const elements = document.querySelectorAll(selector);
+        console.log(`Looking for list selector: ${selector}`);
+        console.log(`Found elements:`, elements.length);
+        return Array.from(elements).map(el => el.textContent.trim());
+      };
+
+      // Log the entire page HTML for debugging
+      console.log('Page HTML:', document.documentElement.outerHTML);
+
+      // Updated selectors for the new LinkedIn layout
+      console.log('Extracting name...');
+      const name = getText('h1.text-heading-xlarge') || 
+                  getText('h1.top-card-layout__title') ||
+                  getText('h1.text-heading-xlarge.break-words');
+      console.log('Name found:', name);
+
+      console.log('Extracting title...');
+      const title = getText('div.text-body-medium.break-words') || 
+                   getText('div.top-card-layout__headline') ||
+                   getText('div.text-body-medium');
+      console.log('Title found:', title);
+
+      console.log('Extracting location...');
+      const location = getText('span.text-body-small.inline.t-black--light.break-words') || 
+                      getText('span.top-card__subline-item') ||
+                      getText('span.text-body-small');
+      console.log('Location found:', location);
+      
+      // About section
+      console.log('Extracting about section...');
+      const aboutSection = document.querySelector('div.display-flex.ph5.pv3') || 
+                          document.querySelector('div.pv-shared-text-with-see-more') ||
+                          document.querySelector('div.inline-show-more-text') ||
+                          document.querySelector('div.pv-shared-text-with-see-more span.inline-show-more-text');
+      console.log('About section found:', aboutSection);
+      const about = aboutSection ? aboutSection.textContent.trim() : '';
+      console.log('About text:', about);
+
+      // Experience section
+      console.log('Extracting experience section...');
+      const experienceSection = document.querySelector('section.experience-section') || 
+                              document.querySelector('section#experience-section') ||
+                              document.querySelector('section[data-section="experience"]');
+      console.log('Experience section found:', experienceSection);
+      const pastRoles = [];
+      if (experienceSection) {
+        const roleElements = experienceSection.querySelectorAll('li.artdeco-list__item') || 
+                           experienceSection.querySelectorAll('li.pv-entity__position-group-pager') ||
+                           experienceSection.querySelectorAll('li.pv-entity__position-group') ||
+                           experienceSection.querySelectorAll('li.pv-entity__position-group-role-item');
+        console.log('Found role elements:', roleElements.length);
+        roleElements.forEach((role, index) => {
+          console.log(`Processing role ${index + 1}...`);
+          const title = getText('h3.t-16.t-black.t-bold') || 
+                       getText('h3.pv-entity__name') ||
+                       getText('h3.t-18.t-black.t-normal') ||
+                       getText('h3.t-16.t-black');
+          const company = getText('p.pv-entity__secondary-title') || 
+                         getText('p.pv-entity__company-name') ||
+                         getText('p.t-14.t-black.t-normal') ||
+                         getText('p.t-14.t-black');
+          const years = getText('span.pv-entity__date-range span:nth-child(2)') || 
+                       getText('span.pv-entity__date-range') ||
+                       getText('span.t-14.t-black--light.t-normal') ||
+                       getText('span.t-14.t-black--light');
+          console.log(`Role ${index + 1} details:`, { title, company, years });
+          if (title && company) {
+            pastRoles.push({ title, company, years });
+          }
+        });
+      }
+
+      // Education section
+      console.log('Extracting education section...');
+      const educationSection = document.querySelector('section.education-section') || 
+                             document.querySelector('section#education-section') ||
+                             document.querySelector('section[data-section="education"]');
+      console.log('Education section found:', educationSection);
+      const education = [];
+      if (educationSection) {
+        const eduElements = educationSection.querySelectorAll('li.pv-education-entity') || 
+                          educationSection.querySelectorAll('li.pv-education-entity__degree-info') ||
+                          educationSection.querySelectorAll('li.pv-education-entity__degree') ||
+                          educationSection.querySelectorAll('li.pv-education-entity__degree-info-item');
+        console.log('Found education elements:', eduElements.length);
+        eduElements.forEach((edu, index) => {
+          console.log(`Processing education ${index + 1}...`);
+          const school = getText('h3.pv-entity__school-name') || 
+                        getText('h3.pv-entity__name') ||
+                        getText('h3.t-16.t-black.t-bold') ||
+                        getText('h3.t-16.t-black');
+          const degree = getText('p.pv-entity__degree-name span:nth-child(2)') || 
+                        getText('p.pv-entity__degree-name') ||
+                        getText('p.t-14.t-black.t-normal') ||
+                        getText('p.t-14.t-black');
+          console.log(`Education ${index + 1} details:`, { school, degree });
+          if (school) {
+            education.push(`${school}${degree ? ` - ${degree}` : ''}`);
+          }
+        });
+      }
+
+      const result = {
+        name,
+        title,
+        location,
+        about,
+        pastRoles,
+        education
+      };
+
+      console.log('Final extracted data:', result);
+      return result;
+    });
+
+    console.log('Raw profile data extracted:', profileData);
+
+    // Generate AI summary if we have data
+    let summary = '';
+    if (profileData.about) {
+      try {
+        console.log('Generating AI summary from about text:', profileData.about);
+        summary = await generateSummary(profileData.about);
+        console.log('Generated summary:', summary);
+      } catch (aiError) {
+        console.error('AI summary error:', aiError);
+        summary = profileData.about.substring(0, 200) + '...';
+      }
+    }
+
+    // Extract current company from title if available
+    let company = '';
+    if (profileData.title) {
+      console.log('Extracting company from title:', profileData.title);
+      const titleParts = profileData.title.split(' at ');
+      if (titleParts.length > 1) {
+        company = titleParts[1].trim();
+        console.log('Extracted company from title:', company);
+      }
+    }
+
+    const result = {
+      id: `alumni_${Date.now()}`,
+      name: profileData.name || 'Unknown',
+      title: profileData.title || '',
+      company: company || profileData.pastRoles[0]?.company || '',
+      location: profileData.location || '',
+      education: profileData.education || [],
+      summary: summary || 'No summary available',
+      linkedinUrl: url,
+      pastRoles: profileData.pastRoles || [],
+      scrapedAt: new Date().toISOString(),
+      status: 'success'
+    };
+
+    console.log('Final result object:', result);
+    return result;
+
   } catch (error) {
-    console.error(`Scraping error for ${profileUrl}:`, error.message);
-    console.log('Falling back to mock data due to error');
-    return generateMockProfileData(profileUrl);
+    console.error('Scraping error:', error);
+    return {
+      id: `alumni_${Date.now()}`,
+      name: 'Unknown',
+      title: '',
+      company: '',
+      location: '',
+      education: [],
+      summary: '',
+      linkedinUrl: url,
+      pastRoles: [],
+      scrapedAt: new Date().toISOString(),
+      status: 'error',
+      error: error.message
+    };
+  } finally {
+    await cleanupBrowser();
+  }
+}
+
+export function isValidLinkedInUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname === 'www.linkedin.com' && 
+           urlObj.pathname.startsWith('/in/') &&
+           urlObj.pathname.length > 4;
+  } catch {
+    return false;
   }
 }
 

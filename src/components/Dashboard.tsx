@@ -1,369 +1,443 @@
-import React, { useState, useMemo } from 'react';
-import { Search, Filter, Download, Users, Building, MapPin, Calendar, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  Box,
+  Container,
+  Typography,
+  Paper,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  TablePagination,
+  TextField,
+  Button,
+  IconButton,
+  Chip,
+  CircularProgress,
+  Alert,
+  Select,
+  MenuItem,
+  FormControl,
+  InputLabel,
+  Grid,
+  Card,
+  CardContent,
+  Collapse,
+  Tooltip,
+} from '@mui/material';
+import {
+  Search as SearchIcon,
+  FilterList as FilterListIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon,
+  Download as DownloadIcon,
+  Refresh as RefreshIcon,
+} from '@mui/icons-material';
+import { format } from 'date-fns';
 import { AlumniData } from '../types';
 
 interface DashboardProps {
   data: AlumniData[];
-  onExport: (format: 'csv' | 'json') => void;
+  onExport: (format: 'csv' | 'json') => Promise<void>;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ data, onExport }) => {
+  const [profiles, setProfiles] = useState<AlumniData[]>(data);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
   const [searchTerm, setSearchTerm] = useState('');
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [companyFilter, setCompanyFilter] = useState<string>('');
+  const [locationFilter, setLocationFilter] = useState<string>('');
   const [sortField, setSortField] = useState<keyof AlumniData>('name');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-  const [filterCompany, setFilterCompany] = useState('');
-  const [filterLocation, setFilterLocation] = useState('');
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [availableCompanies, setAvailableCompanies] = useState<string[]>([]);
+  const [availableLocations, setAvailableLocations] = useState<string[]>([]);
 
-  // Get unique companies and locations for filters
-  const companies = useMemo(() => {
-    const uniqueCompanies = [...new Set(data.map(item => item.company).filter(Boolean))];
-    return uniqueCompanies.sort();
+  // Update profiles when data changes
+  useEffect(() => {
+    setProfiles(data);
+    setLoading(false);
+
+    // Extract unique companies and locations
+    const companies = Array.from(new Set(data.map(p => p.company).filter(Boolean))) as string[];
+    const locations = Array.from(new Set(data.map(p => p.location).filter(Boolean))) as string[];
+    
+    setAvailableCompanies(companies);
+    setAvailableLocations(locations);
   }, [data]);
 
-  const locations = useMemo(() => {
-    const uniqueLocations = [...new Set(data.map(item => item.location).filter(Boolean))];
-    return uniqueLocations.sort();
-  }, [data]);
+  const handleChangePage = (event: unknown, newPage: number) => {
+    setPage(newPage);
+  };
 
-  // Filter and sort data
-  const filteredData = useMemo(() => {
-    let filtered = data.filter(item => {
-      const matchesSearch = searchTerm === '' || 
-        item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        item.company.toLowerCase().includes(searchTerm.toLowerCase());
-      
-      const matchesCompany = filterCompany === '' || item.company === filterCompany;
-      const matchesLocation = filterLocation === '' || item.location === filterLocation;
-      
-      return matchesSearch && matchesCompany && matchesLocation;
-    });
+  const handleChangeRowsPerPage = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(0);
+  };
 
-    // Sort data
-    filtered.sort((a, b) => {
-      const aValue = a[sortField] || '';
-      const bValue = b[sortField] || '';
-      
-      if (sortDirection === 'asc') {
-        return aValue.toString().localeCompare(bValue.toString());
-      } else {
-        return bValue.toString().localeCompare(aValue.toString());
-      }
-    });
-
-    return filtered;
-  }, [data, searchTerm, sortField, sortDirection, filterCompany, filterLocation]);
+  const handleSearch = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchTerm(event.target.value);
+    setPage(0);
+  };
 
   const handleSort = (field: keyof AlumniData) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortDirection('asc');
+    const isAsc = sortField === field && sortDirection === 'asc';
+    setSortDirection(isAsc ? 'desc' : 'asc');
+    setSortField(field);
+  };
+
+  const handleRefresh = async () => {
+    try {
+      setLoading(true);
+      const response = await fetch('http://localhost:3001/api/profiles');
+      if (!response.ok) throw new Error('Failed to refresh profiles');
+      const data = await response.json();
+      setProfiles(data);
+    } catch (err) {
+      console.error('Refresh error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to refresh profiles');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const toggleRowExpansion = (id: string) => {
-    const newExpanded = new Set(expandedRows);
-    if (newExpanded.has(id)) {
-      newExpanded.delete(id);
+  const toggleRowExpand = (id: string) => {
+    const newExpandedRows = new Set(expandedRows);
+    if (newExpandedRows.has(id)) {
+      newExpandedRows.delete(id);
     } else {
-      newExpanded.add(id);
+      newExpandedRows.add(id);
     }
-    setExpandedRows(newExpanded);
+    setExpandedRows(newExpandedRows);
   };
 
-  const getSortIcon = (field: keyof AlumniData) => {
-    if (sortField !== field) return null;
-    return sortDirection === 'asc' ? 
-      <ChevronUp className="w-4 h-4" /> : 
-      <ChevronDown className="w-4 h-4" />;
-  };
+  // Filter and sort profiles
+  const filteredProfiles = profiles
+    .filter((profile) => {
+      const matchesSearch = 
+        profile.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        profile.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        profile.company.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        profile.location.toLowerCase().includes(searchTerm.toLowerCase());
 
-  const successfulProfiles = data.filter(item => item.status === 'success').length;
-  const failedProfiles = data.filter(item => item.status === 'failed').length;
+      const matchesCompany = !companyFilter || profile.company === companyFilter;
+      const matchesLocation = !locationFilter || profile.location === locationFilter;
+
+      return matchesSearch && matchesCompany && matchesLocation;
+    })
+    .sort((a, b) => {
+      const aValue = a[sortField];
+      const bValue = b[sortField];
+
+      if (typeof aValue === 'string' && typeof bValue === 'string') {
+        return sortDirection === 'asc'
+          ? aValue.localeCompare(bValue)
+          : bValue.localeCompare(aValue);
+      }
+      return 0;
+    });
+
+  const paginatedProfiles = filteredProfiles.slice(
+    page * rowsPerPage,
+    page * rowsPerPage + rowsPerPage
+  );
 
   return (
-    <div className="space-y-8">
-      {/* Header Stats */}
-      <div className="grid md:grid-cols-4 gap-6">
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
-              <Users className="w-6 h-6 text-blue-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-600">Total Alumni</p>
-              <p className="text-2xl font-bold text-gray-900">{data.length}</p>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-              <Building className="w-6 h-6 text-green-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-600">Successful</p>
-              <p className="text-2xl font-bold text-gray-900">{successfulProfiles}</p>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
-              <MapPin className="w-6 h-6 text-purple-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-600">Companies</p>
-              <p className="text-2xl font-bold text-gray-900">{companies.length}</p>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-200">
-          <div className="flex items-center space-x-3">
-            <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
-              <Calendar className="w-6 h-6 text-orange-600" />
-            </div>
-            <div>
-              <p className="text-sm text-gray-600">Locations</p>
-              <p className="text-2xl font-bold text-gray-900">{locations.length}</p>
-            </div>
-          </div>
-        </div>
-      </div>
+    <Container maxWidth="xl">
+      <Box sx={{ my: 4 }}>
+        <Typography variant="h4" component="h1" gutterBottom>
+          Alumni Dashboard
+        </Typography>
 
-      {/* Controls */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between space-y-4 lg:space-y-0 lg:space-x-4">
-          {/* Search */}
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
-            <input
-              type="text"
-              placeholder="Search alumni, companies, or titles..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            />
-          </div>
-
-          {/* Filters */}
-          <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-3">
-            <select
-              value={filterCompany}
-              onChange={(e) => setFilterCompany(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="">All Companies</option>
-              {companies.map(company => (
-                <option key={company} value={company}>{company}</option>
-              ))}
-            </select>
-
-            <select
-              value={filterLocation}
-              onChange={(e) => setFilterLocation(e.target.value)}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              <option value="">All Locations</option>
-              {locations.map(location => (
-                <option key={location} value={location}>{location}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Export Buttons */}
-          <div className="flex space-x-2">
-            <button
-              onClick={() => onExport('csv')}
-              className="flex items-center space-x-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              <span>CSV</span>
-            </button>
-            <button
-              onClick={() => onExport('json')}
-              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              <span>JSON</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Results Count */}
-      <div className="flex justify-between items-center">
-        <p className="text-gray-600">
-          Showing {filteredData.length} of {data.length} alumni
-        </p>
-      </div>
-
-      {/* Data Table */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button
-                    onClick={() => handleSort('name')}
-                    className="flex items-center space-x-1 hover:text-gray-700"
-                  >
-                    <span>Name</span>
-                    {getSortIcon('name')}
-                  </button>
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button
-                    onClick={() => handleSort('title')}
-                    className="flex items-center space-x-1 hover:text-gray-700"
-                  >
-                    <span>Current Role</span>
-                    {getSortIcon('title')}
-                  </button>
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button
-                    onClick={() => handleSort('company')}
-                    className="flex items-center space-x-1 hover:text-gray-700"
-                  >
-                    <span>Company</span>
-                    {getSortIcon('company')}
-                  </button>
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  <button
-                    onClick={() => handleSort('location')}
-                    className="flex items-center space-x-1 hover:text-gray-700"
-                  >
-                    <span>Location</span>
-                    {getSortIcon('location')}
-                  </button>
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {filteredData.map((alumni) => (
-                <React.Fragment key={alumni.id}>
-                  <tr className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full flex items-center justify-center text-white font-medium">
-                          {alumni.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
-                        </div>
-                        <div className="ml-4">
-                          <div className="text-sm font-medium text-gray-900">{alumni.name}</div>
-                          <div className="text-sm text-gray-500">
-                            {alumni.status === 'success' ? (
-                              <span className="text-green-600">✓ Processed</span>
-                            ) : (
-                              <span className="text-red-600">✗ Failed</span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{alumni.title || 'N/A'}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{alumni.company || 'N/A'}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="text-sm text-gray-900">{alumni.location || 'N/A'}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
-                      <button
-                        onClick={() => toggleRowExpansion(alumni.id)}
-                        className="text-blue-600 hover:text-blue-900 transition-colors"
-                      >
-                        {expandedRows.has(alumni.id) ? 'Hide Details' : 'View Details'}
-                      </button>
-                      {alumni.linkedinUrl && (
-                        <a
-                          href={alumni.linkedinUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-indigo-600 hover:text-indigo-900 transition-colors inline-flex items-center"
-                        >
-                          <ExternalLink className="w-4 h-4" />
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                  
-                  {expandedRows.has(alumni.id) && (
-                    <tr>
-                      <td colSpan={5} className="px-6 py-4 bg-gray-50">
-                        <div className="space-y-4">
-                          {alumni.summary && (
-                            <div>
-                              <h4 className="font-medium text-gray-900 mb-2">AI Summary</h4>
-                              <p className="text-gray-700 text-sm">{alumni.summary}</p>
-                            </div>
-                          )}
-                          
-                          {alumni.education.length > 0 && (
-                            <div>
-                              <h4 className="font-medium text-gray-900 mb-2">Education</h4>
-                              <ul className="text-gray-700 text-sm space-y-1">
-                                {alumni.education.map((edu, index) => (
-                                  <li key={index}>• {edu}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                          
-                          {alumni.pastRoles.length > 0 && (
-                            <div>
-                              <h4 className="font-medium text-gray-900 mb-2">Past Roles</h4>
-                              <div className="space-y-2">
-                                {alumni.pastRoles.map((role, index) => (
-                                  <div key={index} className="text-sm text-gray-700">
-                                    <span className="font-medium">{role.title}</span> at{' '}
-                                    <span className="font-medium">{role.company}</span>
-                                    {role.years && <span className="text-gray-500"> ({role.years})</span>}
-                                    {role.location && <span className="text-gray-500"> - {role.location}</span>}
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          
-                          {alumni.error && (
-                            <div>
-                              <h4 className="font-medium text-red-900 mb-2">Error</h4>
-                              <p className="text-red-700 text-sm">{alumni.error}</p>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        
-        {filteredData.length === 0 && (
-          <div className="text-center py-12">
-            <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No alumni found</h3>
-            <p className="text-gray-500">Try adjusting your search or filter criteria.</p>
-          </div>
+        {/* Error Alert */}
+        {error && (
+          <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError(null)}>
+            {error}
+          </Alert>
         )}
-      </div>
-    </div>
+
+        {/* Stats Cards */}
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: '1fr 1fr 1fr 1fr' }, gap: 3, mb: 3 }}>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Total Profiles
+              </Typography>
+              <Typography variant="h5">
+                {profiles.length}
+              </Typography>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Successful Scrapes
+              </Typography>
+              <Typography variant="h5">
+                {profiles.filter(p => p.status === 'success').length}
+              </Typography>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Failed Scrapes
+              </Typography>
+              <Typography variant="h5">
+                {profiles.filter(p => p.status === 'failed').length}
+              </Typography>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent>
+              <Typography color="textSecondary" gutterBottom>
+                Last Updated
+              </Typography>
+              <Typography variant="h5">
+                {profiles.length > 0
+                  ? format(new Date(profiles[0].scrapedAt), 'MMM d, yyyy HH:mm')
+                  : 'Never'}
+              </Typography>
+            </CardContent>
+          </Card>
+        </Box>
+
+        {/* Search and Filters */}
+        <Box sx={{ mb: 3, display: 'flex', gap: 2, flexWrap: 'wrap' }}>
+          <TextField
+            label="Search"
+            variant="outlined"
+            size="small"
+            value={searchTerm}
+            onChange={handleSearch}
+            sx={{ flexGrow: 1 }}
+            InputProps={{
+              startAdornment: <SearchIcon sx={{ mr: 1, color: 'text.secondary' }} />,
+            }}
+          />
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Company</InputLabel>
+            <Select
+              value={companyFilter}
+              label="Company"
+              onChange={(e) => setCompanyFilter(e.target.value)}
+            >
+              <MenuItem value="">All Companies</MenuItem>
+              {availableCompanies.map((company) => (
+                <MenuItem key={company} value={company}>
+                  {company}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ minWidth: 200 }}>
+            <InputLabel>Location</InputLabel>
+            <Select
+              value={locationFilter}
+              label="Location"
+              onChange={(e) => setLocationFilter(e.target.value)}
+            >
+              <MenuItem value="">All Locations</MenuItem>
+              {availableLocations.map((location) => (
+                <MenuItem key={location} value={location}>
+                  {location}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={handleRefresh}
+            disabled={loading}
+          >
+            Refresh
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => onExport('csv')}
+          >
+            Export CSV
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => onExport('json')}
+          >
+            Export JSON
+          </Button>
+        </Box>
+
+        {/* Table */}
+        <TableContainer component={Paper}>
+          <Table>
+            <TableHead>
+              <TableRow>
+                <TableCell padding="checkbox" />
+                <TableCell>
+                  <Button
+                    onClick={() => handleSort('name')}
+                    sx={{ color: 'inherit', fontWeight: 'bold' }}
+                  >
+                    Name {sortField === 'name' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </Button>
+                </TableCell>
+                <TableCell>
+                  <Button
+                    onClick={() => handleSort('title')}
+                    sx={{ color: 'inherit', fontWeight: 'bold' }}
+                  >
+                    Title {sortField === 'title' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </Button>
+                </TableCell>
+                <TableCell>
+                  <Button
+                    onClick={() => handleSort('company')}
+                    sx={{ color: 'inherit', fontWeight: 'bold' }}
+                  >
+                    Company {sortField === 'company' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </Button>
+                </TableCell>
+                <TableCell>
+                  <Button
+                    onClick={() => handleSort('location')}
+                    sx={{ color: 'inherit', fontWeight: 'bold' }}
+                  >
+                    Location {sortField === 'location' && (sortDirection === 'asc' ? '↑' : '↓')}
+                  </Button>
+                </TableCell>
+                <TableCell>Status</TableCell>
+                <TableCell>Actions</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading ? (
+                <TableRow>
+                  <TableCell colSpan={6} align="center">
+                    <CircularProgress />
+                  </TableCell>
+                </TableRow>
+              ) : paginatedProfiles.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={6} align="center">
+                    No profiles found
+                  </TableCell>
+                </TableRow>
+              ) : (
+                paginatedProfiles.map((profile) => (
+                  <React.Fragment key={profile.id}>
+                    <TableRow>
+                      <TableCell padding="checkbox">
+                        <IconButton
+                          size="small"
+                          onClick={() => toggleRowExpand(profile.id)}
+                        >
+                          {expandedRows.has(profile.id) ? (
+                            <ExpandLessIcon />
+                          ) : (
+                            <ExpandMoreIcon />
+                          )}
+                        </IconButton>
+                      </TableCell>
+                      <TableCell>{profile.name}</TableCell>
+                      <TableCell>{profile.title}</TableCell>
+                      <TableCell>{profile.company}</TableCell>
+                      <TableCell>{profile.location}</TableCell>
+                      <TableCell>
+                        <Chip
+                          label={profile.status}
+                          color={profile.status === 'success' ? 'success' : profile.status === 'failed' ? 'error' : 'warning'}
+                          size="small"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip title="View LinkedIn Profile">
+                          <IconButton
+                            size="small"
+                            onClick={() => window.open(profile.linkedinUrl, '_blank')}
+                          >
+                            <img
+                              src="/linkedin-icon.png"
+                              alt="LinkedIn"
+                              style={{ width: 20, height: 20 }}
+                            />
+                          </IconButton>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell style={{ paddingBottom: 0, paddingTop: 0 }} colSpan={6}>
+                        <Collapse in={expandedRows.has(profile.id)} timeout="auto" unmountOnExit>
+                          <Box sx={{ margin: 2 }}>
+                            <Typography variant="h6" gutterBottom component="div">
+                              Profile Details
+                            </Typography>
+                            <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
+                              <Box>
+                                <Typography variant="subtitle1">Summary</Typography>
+                                <Typography variant="body2" paragraph>
+                                  {profile.summary || 'No summary available'}
+                                </Typography>
+                              </Box>
+                              <Box>
+                                <Typography variant="subtitle1">Education</Typography>
+                                {profile.education.length > 0 ? (
+                                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                                    {profile.education.map((edu, index) => (
+                                      <li key={index}>
+                                        <Typography variant="body2">{edu}</Typography>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <Typography variant="body2">No education information available</Typography>
+                                )}
+                              </Box>
+                              <Box>
+                                <Typography variant="subtitle1">Past Roles</Typography>
+                                {profile.pastRoles.length > 0 ? (
+                                  <ul style={{ margin: 0, paddingLeft: 20 }}>
+                                    {profile.pastRoles.map((role, index) => (
+                                      <li key={index}>
+                                        <Typography variant="body2">
+                                          {role.title} at {role.company}
+                                          {role.years && ` (${role.years})`}
+                                        </Typography>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <Typography variant="body2">No past roles available</Typography>
+                                )}
+                              </Box>
+                            </Box>
+                          </Box>
+                        </Collapse>
+                      </TableCell>
+                    </TableRow>
+                  </React.Fragment>
+                ))
+              )}
+            </TableBody>
+          </Table>
+          <TablePagination
+            rowsPerPageOptions={[5, 10, 25]}
+            component="div"
+            count={filteredProfiles.length}
+            rowsPerPage={rowsPerPage}
+            page={page}
+            onPageChange={handleChangePage}
+            onRowsPerPageChange={handleChangeRowsPerPage}
+          />
+        </TableContainer>
+      </Box>
+    </Container>
   );
 };
 

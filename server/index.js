@@ -6,9 +6,9 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createObjectCsvWriter } from 'csv-writer';
-import { scrapeLinkedInProfile } from './scraper.js';
-import { generateSummary } from './ai.js';
+import { scrapeLinkedInProfile, isValidLinkedInUrl, cleanupBrowser } from './scraper.js';
 import dotenv from 'dotenv';
+import { parse } from 'csv-parse/sync';
 
 // Load environment variables
 dotenv.config();
@@ -20,136 +20,245 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 app.use(express.json());
 
 // Storage for uploaded files
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: function (req, file, cb) {
     const uploadDir = path.join(__dirname, 'uploads');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
     cb(null, uploadDir);
   },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + '-' + file.originalname);
   }
 });
 
-const upload = multer({ storage });
+const upload = multer({ 
+  storage: storage,
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'text/csv' || file.mimetype === 'application/vnd.ms-excel') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'));
+    }
+  }
+});
 
-// In-memory storage for jobs
+// In-memory storage for jobs and profiles
 const jobs = new Map();
+const profiles = new Map();
+
+// Cleanup browser on server shutdown
+process.on('SIGINT', async () => {
+  console.log('Shutting down server...');
+  await cleanupBrowser();
+  process.exit(0);
+});
 
 // Helper function to generate job ID
 function generateJobId() {
   return `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Upload CSV endpoint
+// Get all profiles
+app.get('/api/profiles', (req, res) => {
+  const profilesArray = Array.from(profiles.values());
+  console.log('Serving profiles:', profilesArray.length);
+  res.json(profilesArray);
+});
+
+// API endpoint to upload CSV file
 app.post('/api/upload', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const jobId = generateJobId();
-    const filePath = req.file.path;
-    
-    // Parse CSV file
-    const profiles = [];
-    
-    // Create a promise to handle the CSV parsing
-    await new Promise((resolve, reject) => {
-      fs.createReadStream(filePath)
-        .pipe(csv())
-        .on('data', (row) => {
-          if (row.linkedin_url) {
-            profiles.push({
-              name: row.name || '',
-              linkedin_url: row.linkedin_url.trim()
-            });
-          }
-        })
-        .on('end', () => {
-          resolve();
-        })
-        .on('error', (error) => {
-          reject(error);
-        });
-    });
+    console.log('File received:', req.file);
 
-    // Create job
+    const filePath = req.file.path;
+    const urls = await parseCSV(filePath);
+    
+    if (!urls || urls.length === 0) {
+      return res.status(400).json({ error: 'No valid LinkedIn URLs found in the CSV file' });
+    }
+    
+    // Create a new job
+    const jobId = Date.now().toString();
     const job = {
       jobId,
       status: 'pending',
-      totalProfiles: profiles.length,
+      totalProfiles: urls.length,
       processedProfiles: 0,
       successfulProfiles: 0,
       failedProfiles: 0,
-      profiles,
+      currentProfile: '',
       results: [],
       startedAt: new Date().toISOString(),
-      errors: []
+      completedAt: null,
+      errors: [],
+      urls: urls // Store the URLs in the job
     };
     
     jobs.set(jobId, job);
     
-    // Clean up uploaded file
-    try {
-      fs.unlinkSync(filePath);
-    } catch (error) {
-      console.error('Error deleting file:', error);
-    }
-    
-    res.json({ jobId, totalProfiles: profiles.length });
+    // Return the job ID without starting the scraping
+    res.json({ jobId, totalProfiles: urls.length });
   } catch (error) {
     console.error('Upload error:', error);
-    // Clean up file if it exists
-    if (req.file && req.file.path) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (cleanupError) {
-        console.error('Error cleaning up file:', cleanupError);
-      }
-    }
-    res.status(500).json({ error: 'Upload failed: ' + error.message });
+    res.status(500).json({ 
+      error: error.message || 'Failed to process the uploaded file',
+      details: error.stack
+    });
   }
 });
 
-// Start scraping job
+// Process URLs for a job
+async function processUrls(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) {
+    console.error(`Job ${jobId} not found`);
+    return;
+  }
+
+  console.log(`Starting to process ${job.urls.length} URLs for job ${jobId}`);
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  job.processedProfiles = 0;
+  job.successfulProfiles = 0;
+  job.failedProfiles = 0;
+  job.results = [];
+  job.errors = [];
+
+  try {
+    for (const url of job.urls) {
+      try {
+        console.log(`Processing URL: ${url}`);
+        job.currentProfile = url;
+        job.processedProfiles++;
+
+        if (!isValidLinkedInUrl(url)) {
+          console.error(`Invalid LinkedIn URL: ${url}`);
+          job.errors.push({
+            url,
+            error: 'Invalid LinkedIn URL'
+          });
+          job.failedProfiles++;
+          continue;
+        }
+
+        console.log(`Scraping profile: ${url}`);
+        const profile = await scrapeLinkedInProfile(url);
+        console.log(`Successfully scraped profile:`, profile);
+
+        if (profile) {
+          job.results.push(profile);
+          job.successfulProfiles++;
+          // Store in profiles map
+          profiles.set(profile.id, profile);
+        } else {
+          console.error(`Failed to scrape profile: ${url}`);
+          job.errors.push({
+            url,
+            error: 'Failed to scrape profile'
+          });
+          job.failedProfiles++;
+        }
+
+        // Add delay between requests
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (error) {
+        console.error(`Error processing URL ${url}:`, error);
+        job.errors.push({
+          url,
+          error: error.message
+        });
+        job.failedProfiles++;
+      }
+    }
+
+    job.status = 'completed';
+    job.completedAt = new Date().toISOString();
+    console.log(`Job ${jobId} completed. Results:`, {
+      total: job.totalProfiles,
+      successful: job.successfulProfiles,
+      failed: job.failedProfiles
+    });
+  } catch (error) {
+    console.error(`Error in job ${jobId}:`, error);
+    job.status = 'failed';
+    job.completedAt = new Date().toISOString();
+    job.errors.push({
+      error: error.message
+    });
+  }
+}
+
+// API endpoint to start scraping
 app.post('/api/scrape', async (req, res) => {
   try {
     const { jobId } = req.body;
+    console.log(`Received scrape request for job ${jobId}`);
+
+    if (!jobId) {
+      console.error('No jobId provided');
+      return res.status(400).json({ error: 'Job ID is required' });
+    }
+
     const job = jobs.get(jobId);
-    
     if (!job) {
+      console.error(`Job ${jobId} not found`);
       return res.status(404).json({ error: 'Job not found' });
     }
-    
-    job.status = 'running';
-    jobs.set(jobId, job);
-    
-    // Start scraping process (non-blocking)
-    processScrapingJob(jobId);
-    
-    res.json(job);
+
+    if (job.status === 'running') {
+      console.error(`Job ${jobId} is already running`);
+      return res.status(400).json({ error: 'Job is already running' });
+    }
+
+    if (job.status === 'completed') {
+      console.error(`Job ${jobId} is already completed`);
+      return res.status(400).json({ error: 'Job is already completed' });
+    }
+
+    console.log(`Starting scraping for job ${jobId}`);
+    // Start processing in the background
+    processUrls(jobId).catch(error => {
+      console.error(`Error in background processing for job ${jobId}:`, error);
+    });
+
+    res.json({ 
+      message: 'Scraping started',
+      jobId,
+      totalProfiles: job.totalProfiles
+    });
   } catch (error) {
-    console.error('Scraping start error:', error);
-    res.status(500).json({ error: 'Failed to start scraping' });
+    console.error('Error starting scrape:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Get job status
-app.get('/api/scrape/status/:jobId', (req, res) => {
+// API endpoint to get job status
+app.get('/api/job/:jobId', (req, res) => {
   const { jobId } = req.params;
-  const job = jobs.get(jobId);
+  console.log(`Getting status for job ${jobId}`);
   
+  const job = jobs.get(jobId);
   if (!job) {
+    console.error(`Job ${jobId} not found`);
     return res.status(404).json({ error: 'Job not found' });
   }
-  
+
+  console.log(`Job ${jobId} status:`, job);
   res.json(job);
 });
 
@@ -202,99 +311,6 @@ app.post('/api/export/:format', (req, res) => {
   }
 });
 
-// Process scraping job
-async function processScrapingJob(jobId) {
-  const job = jobs.get(jobId);
-  if (!job) return;
-  
-  try {
-    for (let i = 0; i < job.profiles.length; i++) {
-      const profile = job.profiles[i];
-      job.currentProfile = profile.name || profile.linkedin_url;
-      jobs.set(jobId, job);
-      
-      try {
-        console.log(`Scraping profile ${i + 1}/${job.profiles.length}: ${profile.linkedin_url}`);
-        
-        // Scrape LinkedIn profile
-        const scrapedData = await scrapeLinkedInProfile(profile.linkedin_url);
-        
-        // Generate AI summary if we have data
-        let summary = '';
-        if (scrapedData.about) {
-          try {
-            summary = await generateSummary(scrapedData.about);
-          } catch (aiError) {
-            console.error('AI summary error:', aiError);
-            summary = scrapedData.about.substring(0, 200) + '...';
-          }
-        }
-        
-        const result = {
-          id: `alumni_${Date.now()}_${i}`,
-          name: scrapedData.name || profile.name || 'Unknown',
-          title: scrapedData.title || '',
-          company: scrapedData.company || '',
-          location: scrapedData.location || '',
-          education: scrapedData.education || [],
-          summary: summary || 'No summary available',
-          linkedinUrl: profile.linkedin_url,
-          pastRoles: scrapedData.pastRoles || [],
-          scrapedAt: new Date().toISOString(),
-          status: 'success'
-        };
-        
-        job.results.push(result);
-        job.successfulProfiles++;
-        
-      } catch (error) {
-        console.error(`Error scraping ${profile.linkedin_url}:`, error);
-        
-        const result = {
-          id: `alumni_${Date.now()}_${i}`,
-          name: profile.name || 'Unknown',
-          title: '',
-          company: '',
-          location: '',
-          education: [],
-          summary: '',
-          linkedinUrl: profile.linkedin_url,
-          pastRoles: [],
-          scrapedAt: new Date().toISOString(),
-          status: 'failed',
-          error: error.message
-        };
-        
-        job.results.push(result);
-        job.failedProfiles++;
-        job.errors.push(`${profile.linkedin_url}: ${error.message}`);
-      }
-      
-      job.processedProfiles++;
-      jobs.set(jobId, job);
-      
-      // Add delay between requests to be respectful
-      if (i < job.profiles.length - 1) {
-        const delay = parseInt(process.env.SCRAPING_DELAY_MS) || 3000;
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-    }
-    
-    job.status = 'completed';
-    job.completedAt = new Date().toISOString();
-    job.currentProfile = undefined;
-    jobs.set(jobId, job);
-    
-    console.log(`Job ${jobId} completed. Successful: ${job.successfulProfiles}, Failed: ${job.failedProfiles}`);
-    
-  } catch (error) {
-    console.error(`Job ${jobId} failed:`, error);
-    job.status = 'failed';
-    job.errors.push(`Job failed: ${error.message}`);
-    jobs.set(jobId, job);
-  }
-}
-
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   const hasGeminiKey = process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here';
@@ -305,23 +321,95 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Function to start server with port fallback
-const startServer = (port) => {
-  app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-    console.log('AI Service:', process.env.GEMINI_API_KEY ? 'Real AI' : 'Mock AI (Demo)');
-    if (!process.env.GEMINI_API_KEY) {
-      console.log('💡 Add your GEMINI_API_KEY to .env file to enable real AI processing');
+// Function to parse CSV file
+async function parseCSV(filePath) {
+  try {
+    console.log('Reading CSV file:', filePath);
+    const fileContent = fs.readFileSync(filePath, 'utf-8');
+    
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true
+    });
+
+    console.log('Parsed CSV records:', records);
+
+    // Extract LinkedIn URLs from the CSV
+    const urls = records
+      .map(record => {
+        // Try different possible column names for LinkedIn URL
+        const url = record.linkedin_url || record.linkedinUrl || record.url || record.URL || record.LinkedIn;
+        return url ? url.trim() : null;
+      })
+      .filter(url => url && isValidLinkedInUrl(url));
+
+    console.log('Extracted LinkedIn URLs:', urls);
+
+    // Clean up the file after parsing
+    try {
+      fs.unlinkSync(filePath);
+      console.log('Cleaned up CSV file');
+    } catch (cleanupError) {
+      console.error('Error cleaning up CSV file:', cleanupError);
     }
-  }).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log(`Port ${port} is busy, trying ${port + 1}...`);
-      startServer(port + 1);
-    } else {
-      console.error('Server error:', err);
-    }
-  });
-};
+
+    return urls;
+  } catch (error) {
+    console.error('Error parsing CSV:', error);
+    throw new Error('Failed to parse CSV file: ' + error.message);
+  }
+}
+
+// Function to start the server
+async function startServer() {
+  try {
+    // Cleanup any existing browser session
+    await cleanupBrowser();
+    
+    const server = app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+
+    // Handle server errors
+    server.on('error', (error) => {
+      if (error.code === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use. Please try the following:`);
+        console.error('1. Kill the existing process:');
+        console.error(`   lsof -i :${PORT} | grep LISTEN`);
+        console.error(`   kill <PID>`);
+        console.error('2. Or use a different port by setting the PORT environment variable');
+        process.exit(1);
+      } else {
+        console.error('Server error:', error);
+        process.exit(1);
+      }
+    });
+
+    // Handle process termination
+    process.on('SIGINT', async () => {
+      console.log('Shutting down server...');
+      await cleanupBrowser();
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
+    });
+
+    process.on('SIGTERM', async () => {
+      console.log('Received SIGTERM. Shutting down server...');
+      await cleanupBrowser();
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
+    });
+
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
 
 // Start the server
-startServer(PORT);
+startServer();
